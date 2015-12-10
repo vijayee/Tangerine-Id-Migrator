@@ -76,6 +76,7 @@ sequence.getPrefix(function(prefix){
 
 //create a process for processing id's
 mapIds= function(docs, callback) {
+    console.log("Creating Mappings");
     var mappings = 0;
     var done= docs.length;
     docs.forEach(function(doc){
@@ -88,7 +89,6 @@ mapIds= function(docs, callback) {
                 if (err){
                     console.log(err);
                 }
-                console.log('storing key:' + doc["_id"] );
                 mappings++;
                 if(mappings >= done){
                     if(callback) {
@@ -101,49 +101,47 @@ mapIds= function(docs, callback) {
     });
 };
 swapIds= function(docs, callback){
+    console.log("Swapping Ids");
     var swaps= 0;
     var done= docs.length
-    docs.forEach(function(doc){
-        var batch=[];
-        var props=0;
+    for(var i=0; i < docs.length; i++){
+        var doc= docs[i];
+        index= String(i);
+        var props=[];
         for (var property in doc) {
             var prop = String(property);
-            if(/fromInstanceId/.test(prop)){
+            if (prop === "fromInstanceId") {
                 continue;
             }
-            else {
-                var finds = 0;
-
-                if (re.test(prop)) {
-                    props++;
-                    var key = String(doc[prop]);
-                    if (key) {
-                        db.get(key, function (err, value) {
-                            finds++;
-                            if (err) {
-                                console.log(" match:" + re.test(prop));
-                                console.log(" looking for property:" + prop);
-                                console.log(" looking for key:" + key);
-                                console.log(err);
-                            } else {
-                                doc[prop] = value;
-                            }
-                            if (props >= finds) {
-                                swaps++
-                            }
-                            if (swaps >= done) {
-                                if (callback) {
-                                    process.nextTick(function() {return callback(docs);})
-
-                                }
-                            }
-                        });
-                    }
-                }
+            if (re.test(prop)) {
+                props.push(prop)
             }
         }
+        var found= 0;
+        var finds= props.length;
+        props.forEach(function(prop){
+            db.get(doc[prop], function (err, value) {
+                found++;
+                if (err) {
+                    console.log(err);
+                }
+                docs[Number(index)][prop] = value;
+                if (found >= finds) {
+                    console.log('finds: ' + finds);
+                    swaps++;
+                }
+                if (swaps >= done) {
+                    console.log('swaps: ' + swaps);
+                    console.log('done: ' + done);
+                    process.nextTick(function () {
+                        return callback(docs);
+                    });
+                }
 
-    });
+            });
+        });
+
+    }
 };
 
 
@@ -273,6 +271,8 @@ var doGroup = function() {
                         return row.doc;
                     });
                 swapIds(docs,function(docs){
+                    process.nextTick(step2); // clear the stack
+                    /*
                     unirest.put('http://localhost:5984/')
                         .headers(JSON_HEADERS)
                         .auth(process.env.T_ADMIN, process.env.T_PASS)
@@ -289,6 +289,7 @@ var doGroup = function() {
                                 .end(function (response) {
                                     if(!response.body.rows){
                                         console.log('migrated' + docs.length + 'documents');
+                                        console.log('top id: ' + docs[0]._id);
                                         return;
                                     }
 
@@ -303,7 +304,7 @@ var doGroup = function() {
 
                                 });
 
-                        });
+                        });*/
                 });
                 // do work above here, call doOne when done a step
             });
