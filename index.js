@@ -53,6 +53,7 @@ sequencer.prototype.next = function (type, callback) {
         .send({type: type, db: this.db, clientPrefix: this.prefix})
         .end(function(response){
             if(!response.body || !response.body.ID) {
+                console.log('error getting key');
                 nextId= null;
                 return callback(nextId);
             } else{
@@ -73,75 +74,80 @@ sequence.getPrefix(function(prefix){
     doGroup();
 
 });
-
+var errors = [];
 //create a process for processing id's
 mapIds= function(docs, callback) {
-    console.log("Creating Mappings");
-    var mappings = 0;
-    var done= docs.length;
-    docs.forEach(function(doc){
-        var type;
-        if(doc["collection"]){
-           type= String(doc["collection"]).charAt(0);
+    if(!docs || docs.length == 0){
+        return
+    }
+    var current= -1;
+
+    var map= function(err){
+        if (err){
+            errors.push(err);
         }
-        sequence.next(type,function(id){
-            db.put(doc["_id"], id, function(err){ //open the box
-                if (err){
-                    console.log(err);
-                }
-                mappings++;
-                if(mappings >= done){
-                    if(callback) {
-                        callback();
-                    }
-                }
-            });
+        current++;
+        if (current == docs.length) {
+         return callback();
+        }
+        var type;
+        if(docs[current]["collection"]){
+            type= String(docs[current]["collection"]).charAt(0);
+        }
+        sequence.next(type,function(id) {
+            db.put(docs[current]["_id"], id, map);
         });
 
-    });
+    };
+    map();
 };
+//Function for retrieving the mapping and
 swapIds= function(docs, callback){
-    console.log("Swapping Ids");
-    var swaps= 0;
-    var done= docs.length
-    for(var i=0; i < docs.length; i++){
-        var doc= docs[i];
-        index= String(i);
+    if(!docs || docs.length == 0){
+        return
+    }
+    var current= -1;
+    swap=function(){
+        current++;
+        if (current == docs.length) {
+            return callback(docs);
+        }
         var props=[];
-        for (var property in doc) {
+        for (var property in docs[current]) {
             var prop = String(property);
             if (prop === "fromInstanceId") {
                 continue;
             }
             if (re.test(prop)) {
-                props.push(prop)
+                if (docs[current][prop]) {
+                    props.push(prop);
+                }
             }
         }
-        var found= 0;
-        var finds= props.length;
-        props.forEach(function(prop){
-            db.get(doc[prop], function (err, value) {
-                found++;
-                if (err) {
-                    console.log(err);
-                }
-                docs[Number(index)][prop] = value;
-                if (found >= finds) {
-                    console.log('finds: ' + finds);
-                    swaps++;
-                }
-                if (swaps >= done) {
-                    console.log('swaps: ' + swaps);
-                    console.log('done: ' + done);
-                    process.nextTick(function () {
-                        return callback(docs);
-                    });
-                }
+        if (props.length == 0){
+            return;
+        }
+        var curProp= -1
+        var lookup =function(err, value){
+            if (err) {
+                errors.push("Error on Property:  " + props[curProp]);
+                errors.push(err);
+            }
+            if(value){
+                docs[current][props[curProp]] = value;
+            }
+            curProp++;
+            if(curProp == props.length){
+                return swap();
+            }
 
-            });
-        });
+            db.get(docs[current][props[curProp]], lookup);
 
-    }
+        };
+        lookup();
+
+    };
+    swap();
 };
 
 
@@ -150,7 +156,7 @@ var groups = ["group-drc_eddata_2015"]; // list of groups to transform
 var doGroup = function() {
     var groupName = groups.pop();
 
-    console.log('\n\n' + groupName);
+    console.log('\n\n Migrating Group: ' + groupName);
 
     var docCount = 0;
     var lastId = '';
@@ -187,10 +193,10 @@ var doGroup = function() {
                 var onlyGotTheStartDoc = rows.length === 1;
                 var didntGetAnything = rows.length === 0;
                 if (onlyGotTheStartDoc || didntGetAnything) {
-                    console.log('All done');
-                    console.log('Old size: ' + beforeDocSize);
-                    console.log('New size: ' + afterDocSize + ' (' + parseInt((afterDocSize / beforeDocSize) * 100) + '%)');
+                    console.log('Mapping Complete');
                     console.log('That took ' + (parseInt((new Date()).getTime() - timeBegin) / 1000));
+                    console.log('Initiating Swapping');
+                    lastId = '';
                     return step2();
                 }
 
@@ -221,7 +227,6 @@ var doGroup = function() {
     step1();
 
     var step2 = function() { //Open the box
-        var lastId = '';
         var limit;
         if (lastId === '') {
             limit = CHUNK_SIZE;
@@ -247,10 +252,12 @@ var doGroup = function() {
                 var onlyGotTheStartDoc = rows.length === 1;
                 var didntGetAnything = rows.length === 0;
                 if (onlyGotTheStartDoc || didntGetAnything) {
-                    console.log('All done');
-                    console.log('Old size: ' + beforeDocSize);
-                    console.log('New size: ' + afterDocSize + ' (' + parseInt((afterDocSize / beforeDocSize) * 100) + '%)');
+                    console.log(rows.length);
+                    console.log('Swapping Complete');
                     console.log('That took ' + (parseInt((new Date()).getTime() - timeBegin) / 1000));
+                    console.log('Group Errors:');
+                    errors.forEach(function(err){console.log(err);});
+                    errors=[];
                     return doGroup();
                 }
 
@@ -271,7 +278,7 @@ var doGroup = function() {
                         return row.doc;
                     });
                 swapIds(docs,function(docs){
-                    process.nextTick(step2); // clear the stack
+                    process.nextTick(step2);
                     /*
                     unirest.put('http://localhost:5984/')
                         .headers(JSON_HEADERS)
@@ -279,7 +286,7 @@ var doGroup = function() {
                         .end(function (response) {
 
                             if (!response.error) {
-                                console.log('database ('+localGroupPath+') created');
+                                console.log('database (' + localGroupPath + ') created');
                             }
 
                             unirest.post('http://localhost:5984/' + groupName + '/_bulk_docs')
@@ -289,7 +296,6 @@ var doGroup = function() {
                                 .end(function (response) {
                                     if(!response.body.rows){
                                         console.log('migrated' + docs.length + 'documents');
-                                        console.log('top id: ' + docs[0]._id);
                                         return;
                                     }
 
@@ -304,7 +310,8 @@ var doGroup = function() {
 
                                 });
 
-                        });*/
+                        });
+                        */
                 });
                 // do work above here, call doOne when done a step
             });
